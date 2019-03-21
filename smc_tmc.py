@@ -12,7 +12,7 @@ from tensorflow.examples.tutorials.mnist import input_data
 
 mnist = input_data.read_data_sets('../../MNIST_data', one_hot=True)
 mb_size = 16
-z_dim = 5
+z_dim = 16
 X_dim = mnist.train.images.shape[1]
 y_dim = mnist.train.labels.shape[1]
 h_dim = 128
@@ -20,7 +20,7 @@ c = 0
 lr = 1e-3
 #-------------------
 L = z_dim -1  #number of stage
-C = 3  #particlesa
+C = 100  #particles
 a = 1
 b = 5
 
@@ -55,7 +55,7 @@ def KL_q_tmc(q_means,q_vars,tmc_means,tmc_vars):
 
 def cal_KL_q_tau(q_means,q_vars,tmc_means,tmc_vars):
     #means,vars = tmc.get_mean_var()
-    kl_loss_p_and_tmc = tf.reduce_sum(tf.log(tmc_vars / tf.exp(z_logvar)) + ( (tf.exp(z_logvar))**2+ (z_mu-tmc_means)**2 )/ (2* (tmc_vars)**2) -0.5, 1)
+    kl_loss_p_and_tmc = tf.reduce_sum(tf.log(tmc_vars**0.5) - z_logvar/2 + ( (tf.exp(z_logvar))+ (z_mu-tmc_means)**2 )/ (2* (tmc_vars)) -0.5, 1)
     return kl_loss_p_and_tmc
 
 
@@ -66,7 +66,8 @@ class z_node():
 
 class leaf_node():  #used for split
     def __init__(self,mean,z_nodes,var = 1, z = 0,t = 0,left_child = None,right_child = None):
-        self.z_nodes = [z_node(z.mean,z.var) for z in z_nodes] #z index type:[z_node]
+        #self.z_nodes = [z_node(z.mean,z.var) for z in z_nodes] #z index type:[z_node]
+        self.z_nodes = z_nodes
         self.mean = mean
         self.var = var 
         self.left_child = left_child #
@@ -109,7 +110,7 @@ class TMC():
     
     def copy(self,tmc2):
         self.z_nodes = [z_node(z_n.mean,z_n.var) for z_n in tmc2.z_nodes]
-        self.leaf_nodes = [leaf_node(mean = ln.mean,var = ln.var,z_nodes = [z_node(z_n.mean,z_n.var) for z_n in ln.z_nodes],z = ln.z,t= ln.t) for ln in tmc2.leaf_nodes]
+        self.leaf_nodes = [leaf_node(mean = ln.mean,var = ln.var,z_nodes = self.z_nodes ,z = ln.z,t= ln.t) for ln in tmc2.leaf_nodes]
     
     def sample(self,N = 16):
         latent = np.zeros([N,z_dim])
@@ -177,16 +178,16 @@ def generate_next_TMC(tmc_old):
 
     def sample_node():
         weights = [len(node.z_nodes) for node in tmc.leaf_nodes] #excludes leaf_node with z_dim = 1
-        print("weights",weights)
+        #print("weights",weights)
         
         #weights = [get_P(len(node.z_nodes)) for node in leaf_nodes]
         weigths = normalize_weigths(weights)
-        print("weights",weights)
-        print(np.random.multinomial(1,weights))
+        #print("weights",weights)
+        #print(np.random.multinomial(1,weights))
         
         node_idx = np.where(np.random.multinomial(1,weights) == 1)[0][0] ####????? sample 1 time, find 1's index
         
-        print("node_idx",node_idx)
+        #print("node_idx",node_idx)
         
         sampled_node = tmc.leaf_nodes[node_idx]
         
@@ -197,8 +198,8 @@ def generate_next_TMC(tmc_old):
     tmc = TMC(z_dim) # new tmc
     tmc.copy(tmc_old) # copy from old tmc
     
-    print("tmc",tmc)
-    print("tmc leaf_nodes before split",tmc.leaf_nodes)
+    #print("tmc",tmc)
+    #print("tmc leaf_nodes before split",tmc.leaf_nodes)
     
     if len(tmc.leaf_nodes) == 1:
 
@@ -207,14 +208,14 @@ def generate_next_TMC(tmc_old):
         node = sample_node()
 
     partition_len =np.random.choice([x for x in range (1,len(node.z_nodes))],1)  #should according to Combinations
-    print("partition_len",partition_len)
+    #print("partition_len",partition_len)
     left,right = sample_partition(node,partition_len[0]) #e.g. left = [1,2] right = [3,4]
-    print("left,right",len(left),len(right))
+    #print("left,right",len(left),len(right))
     
     beta_v = np.random.beta(a, b, size=1)[0]
     node.left_child = leaf_node(mean = node.z, z_nodes = left, t = node.t + beta_v*(1-node.t))
     z_set = np.random.normal(node.z, node.left_child.t - node.t)
-    print("z_set",z_set)
+    #print("z_set",z_set)
     
     node.left_child.set_z(np.random.normal(node.z, node.left_child.t - node.t))
     node.left_child.set_var(node.left_child.t - node.t)
@@ -226,7 +227,9 @@ def generate_next_TMC(tmc_old):
     node.right_child.set_z(np.random.normal(node.z,node.right_child.t - node.t))
     node.right_child.set_var(node.right_child.t - node.t)
     node.right_child.update_z_nodes()
-
+    
+    #print("node.right_child.z_nodes mean ", [zn.mean for zn in node.right_child.z_nodes])
+    
     tmc.leaf_nodes.remove(node)
     
     '''
@@ -238,8 +241,8 @@ def generate_next_TMC(tmc_old):
     if len(node.right_child.z_nodes) !=1:        # add to node to split
         tmc.leaf_nodes.append(node.right_child)
     
-    print("leaf_nodes after change",tmc.leaf_nodes)
-    print("tmc after",tmc)
+    #print("leaf_nodes after change",tmc.leaf_nodes)
+    #print("tmc after",tmc)
     return tmc
 
 
@@ -260,19 +263,25 @@ def Gaussian(z,mean,var): #z(batch_size,1)
 def Cal_P(z,tmc): #(batch_size,z_dim)
     loglikelihood = 0
     i = 0
+    #print("tmc.z_nodes mean",[z_n.mean for z_n in tmc.z_nodes])
+    #print("tmc.z_nodes var",[z_n.var for z_n in tmc.z_nodes])
+    
+    likelihood = np.ones(mb_size)
     for node in tmc.z_nodes:
         #print(node.mean,node.var)
         add = (np.log(Gaussian(z[:,i],node.mean,node.var)))
         #print("add",add)
-        loglikelihood += add
+        likelihood += add
+        
+        #likelihood = likelihood* Gaussian(z[:,i],node.mean,node.var)
         i+=1 
     
-    loglikelihood = np.sum(loglikelihood)
-    print("loglikelihood",loglikelihood)
-    return loglikelihood #(1) sum of a batch of likelihood
+    likelihood = np.sum(likelihood)
+    #print("likelihood",likelihood)
+    return likelihood #(1) sum of a batch of likelihood
 
 
-def update_TMC(z,P_l,tau_l_star = None):# z (batch_size,z_dim)
+def update_TMC(z,P_l,tau_l_star = None, is_first = 1):# z (batch_size,z_dim)
     #tau_l: TMC tree partition structure
     #P = num_P()
     l = 1 #stage
@@ -282,26 +291,31 @@ def update_TMC(z,P_l,tau_l_star = None):# z (batch_size,z_dim)
     j = [1 for _ in range(C)]
     
     while l<L:
-        print("l",l)
+        #print("l",l)
         for c in range(0,C): #for different particles
             
-            print("c,l",c,l)
+            #print("c,l",c,l)
             #print("P_l",len((P_l[c][0]).leaf_nodes))
             
             if c==1:
                 #P_l[1] = tau_l_star[c] #1 stage of tau*star
 
                 #P_l[1][l] = tau_l_star[c] ?
-
-                P_l[c][l] = generate_next_TMC(P_l[c][l-1])
+                if is_first == 1:
+                    P_l[c][l] = generate_next_TMC(P_l[c][l-1])
+                else:
+                    P_l[c][l] = tau_l_star[l]
+                    #print("mean last",[zn.mean for zn in P_l[c][l].z_nodes])
+                #P_l[c][l] = tau_l_star[l]
 
             else:
                 P_l[c][l] = generate_next_TMC(P_l[c][l-1])
             
             #print("P_l",P_l)
             #print("P_l[c][l],P_l[c][l-1]",P_l[c][l],P_l[c][l-1])
-            ratio = omega_lm1[c]*(Cal_P(z,P_l[c][l])/Cal_P(z,P_l[c][l-1]))
-            print("ratio",ratio)
+            #ratio = omega_lm1[c]*(Cal_P(z,P_l[c][l])/Cal_P(z,P_l[c][l-1]))
+            ratio = omega_lm1[c]*(Cal_P(z,P_l[c][l-1])/Cal_P(z,P_l[c][l]))
+            #print("ratio",ratio)
             omega_l[c] = ratio
 
             
@@ -309,33 +323,36 @@ def update_TMC(z,P_l,tau_l_star = None):# z (batch_size,z_dim)
         #Normalize weights
         W_l = np.sum(omega_l)
         omega_ln = omega_l/W_l
-        print("omega_l",omega_l)
-        print("W_l",W_l)
-        print("omega_ln",omega_ln,sum(omega_ln))
+        #print("omega_l",omega_l)
+        #print("W_l",W_l)
+        #print("omega_ln",omega_ln,sum(omega_ln))
          
         j[0] = 1
 
         for c in range(1,C):  #why?
             j[c] = np.where(np.random.multinomial(1,omega_ln) == 1)[0][0]
-            print("j[c]",j[c])
-            P_l[c][l] = P_l[j[c]][l]
+            #print("j[c]",j[c])
+            P_l[c][l] = P_l[j[c]][l] #
             omega_l[c] = W_l/C
 
         l = l+1 
 
     
     tau_idx =np.where(np.random.multinomial(1,omega_ln) == 1)[0][0]
-    print("tau_idx",tau_idx)
+    #print("tau_idx",tau_idx)
     l = l -1
     tau_star,tau_l_star = P_l[tau_idx][l],P_l[tau_idx]
-
+    
+    #print("mean",[zn.mean for zn in tau_star.z_nodes])
+    #print("var",[zn.var for zn in tau_star.z_nodes])
     return tau_star,tau_l_star
     
 def init_variables():
     # this means stage l = 0
 
     tau_star = TMC(z_dim)    #一个update过程最后选取的第L个tmc，用于做先.初始化为未分裂的树
-    tau_l_star = [TMC(z_dim) for _ in range(L)]   #用于做c=1 的不同stage的值. 初始化为
+    tau_l_star = [TMC(z_dim) for _ in range(L)]  #用于做c=1 的不同stage的值. 初始化为
+    
     P_l = [[None for _ in range(L)] for _ in range(C+1)] # particle c 的 L次的tmc 初始化：P_l[c][0] = 未分裂的树 c= 1:C
 
     for c in range(0,C):
@@ -376,7 +393,7 @@ def Q(X):
     h = tf.nn.relu(tf.matmul(X, Q_W1) + Q_b1)
     z_mu = tf.matmul(h, Q_W2_mu) + Q_b2_mu
     z_logvar = tf.matmul(h, Q_W2_sigma) + Q_b2_sigma
-    return z_mu, z_logvar
+    return z_mu, z_logvar   #(batch,z_dim)
 
 
 def sample_z(mu, log_var):
@@ -444,25 +461,25 @@ P_l,tau_star,tau_l_star = init_variables()
 
 #print("get_P:",get_P)
 
-for it in range(100000):
+for it in range(1,2000):
     X_mb, _ = mnist.train.next_batch(mb_size)
-    print(tau_star)
+    #print(tau_star)
     tau_mean_,tau_var_ = tau_star.get_mean_var()
-    print("shape",tau_mean_.shape,tau_var_.shape)
+    #print("shape",tau_mean_.shape,tau_var_.shape)
 	
     
     _, loss ,kl_loss_p_and_tmc_,z_sample_,z_mu_, z_logvar_,recon_loss_ = sess.run([solver, vae_loss, kl_loss_p_and_tmc,z_sample,z_mu, z_logvar,recon_loss], feed_dict={X: X_mb, tau_mean:tau_mean_, tau_var:tau_var_ })
     #-----------SMC for inferring TMC----------------------
     
-    print("z shape",z_sample_.shape)
+    #print("z shape",z_sample_.shape)
     print('Loss: {:.4}'. format(loss))
     print('kl_loss_p_and_tmc:',kl_loss_p_and_tmc_)
     print('recon_loss',recon_loss_)
-    tau_star,tau_l_star = update_TMC(z_sample_,P_l,tau_l_star)
+    tau_star,tau_l_star = update_TMC(z_sample_,P_l,tau_l_star,is_first = it)
     
-    break
+    
     #------------------------------------------------------
-    if it % 100 == 0:
+    if it % 20 == 0:
         print('Iter: {}'.format(it))
         
         #print('kl_loss_p_and_tmc:',kl_loss_p_and_tmc_)
@@ -476,7 +493,8 @@ for it in range(100000):
         
         #sampled_prior  = np.random.randn(16, z_dim)
         sampled_prior= tau_star.sample(N=16)   #(16,z_dim)
-        #print(sampled_prior)
+        print(sampled_prior)
+        #break
         samples = sess.run(X_samples, feed_dict={z: sampled_prior})
 
         fig = plot(samples)
