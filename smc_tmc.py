@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import os
 import scipy
+from sklearn.neighbors import KNeighborsClassifier
 
 #from torch.autograd import Variable
 
@@ -20,7 +21,7 @@ c = 0
 lr = 1e-3
 #-------------------
 L = z_dim -1  #number of stage
-C = 100  #particles
+C = 20  #particles
 a = 1
 b = 5
 
@@ -255,8 +256,8 @@ def Gaussian(z,mean,var): #z(batch_size,1)
     
     #print("mean",mean)
     #print("var",var)
-    
-    ans = ((var*np.sqrt(2*pi))**-1) *np.exp(-0.5*((z-mean)/var)**2) + 0.00000000001
+    #ans = ((np.sqrt(2*pi*var))**-1) *np.exp(-0.5*((z-mean)**2/var)) + 0.00000000001
+    ans = ((np.sqrt(2*pi*var))**-1) *np.exp(-0.5*((z-mean)**2/var)) + 0.00000000001
     #print("ans",ans)
     return ans
 
@@ -267,13 +268,14 @@ def Cal_P(z,tmc): #(batch_size,z_dim)
     #print("tmc.z_nodes var",[z_n.var for z_n in tmc.z_nodes])
     
     likelihood = np.ones(mb_size)
+    
     for node in tmc.z_nodes:
         #print(node.mean,node.var)
-        add = (np.log(Gaussian(z[:,i],node.mean,node.var)))
+        #add = (np.log(Gaussian(z[:,i],node.mean,node.var)))
         #print("add",add)
-        likelihood += add
+        #likelihood += add
         
-        #likelihood = likelihood* Gaussian(z[:,i],node.mean,node.var)
+        likelihood = likelihood* Gaussian(z[:,i],node.mean,node.var)
         i+=1 
     
     likelihood = np.sum(likelihood)
@@ -313,8 +315,8 @@ def update_TMC(z,P_l,tau_l_star = None, is_first = 1):# z (batch_size,z_dim)
             
             #print("P_l",P_l)
             #print("P_l[c][l],P_l[c][l-1]",P_l[c][l],P_l[c][l-1])
-            #ratio = omega_lm1[c]*(Cal_P(z,P_l[c][l])/Cal_P(z,P_l[c][l-1]))
-            ratio = omega_lm1[c]*(Cal_P(z,P_l[c][l-1])/Cal_P(z,P_l[c][l]))
+            ratio = omega_lm1[c]*(Cal_P(z,P_l[c][l])/Cal_P(z,P_l[c][l-1]))
+            #ratio = omega_lm1[c]*(Cal_P(z,P_l[c][l-1])/Cal_P(z,P_l[c][l]))
             #print("ratio",ratio)
             omega_l[c] = ratio
 
@@ -323,13 +325,18 @@ def update_TMC(z,P_l,tau_l_star = None, is_first = 1):# z (batch_size,z_dim)
         #Normalize weights
         W_l = np.sum(omega_l)
         omega_ln = omega_l/W_l
+        
+        #if np.sum(omega_ln) != 1:
+            #print(np.sum(omega_ln))
+            #omega_ln[0] += 1- np.sum(omega_ln)
         #print("omega_l",omega_l)
         #print("W_l",W_l)
         #print("omega_ln",omega_ln,sum(omega_ln))
-         
+        #print("omega_ln",np.sum(omega_ln)) 
         j[0] = 1
 
         for c in range(1,C):  #why?
+            
             j[c] = np.where(np.random.multinomial(1,omega_ln) == 1)[0][0]
             #print("j[c]",j[c])
             P_l[c][l] = P_l[j[c]][l] #
@@ -346,6 +353,16 @@ def update_TMC(z,P_l,tau_l_star = None, is_first = 1):# z (batch_size,z_dim)
     #print("mean",[zn.mean for zn in tau_star.z_nodes])
     #print("var",[zn.var for zn in tau_star.z_nodes])
     return tau_star,tau_l_star
+
+def acc(pred,label):
+    total = len(pred)
+    acc = 0
+    
+    for i in range(total):
+        if pred[i] == label[i]:
+            acc+=1
+    return acc/total
+
     
 def init_variables():
     # this means stage l = 0
@@ -457,11 +474,12 @@ i = 0
 #------train---------
 #initrilize tmc
 P_l,tau_star,tau_l_star = init_variables()
+
 #get_P = num_P(z_dim) #global variable
 
 #print("get_P:",get_P)
 
-for it in range(1,2000):
+for it in range(1,20000):
     X_mb, _ = mnist.train.next_batch(mb_size)
     #print(tau_star)
     tau_mean_,tau_var_ = tau_star.get_mean_var()
@@ -472,28 +490,53 @@ for it in range(1,2000):
     #-----------SMC for inferring TMC----------------------
     
     #print("z shape",z_sample_.shape)
-    print('Loss: {:.4}'. format(loss))
-    print('kl_loss_p_and_tmc:',kl_loss_p_and_tmc_)
-    print('recon_loss',recon_loss_)
-    tau_star,tau_l_star = update_TMC(z_sample_,P_l,tau_l_star,is_first = it)
-    
+    #print('Loss: {:.4}'. format(loss))
+    #print('kl_loss_p_and_tmc:',kl_loss_p_and_tmc_)
+    #print('recon_loss',recon_loss_)
+    if it % 50 == 0:
+        #P_l,tau_star,tau_l_star = init_variables()
+        for pp in range(1,10):
+            P_l,_,_ = init_variables()
+            tau_star,tau_l_star = update_TMC(z_sample_,P_l,tau_l_star,is_first = pp)
+           
     
     #------------------------------------------------------
-    if it % 20 == 0:
+    if it % 100 == 0:
         print('Iter: {}'.format(it))
-        
-        #print('kl_loss_p_and_tmc:',kl_loss_p_and_tmc_)
-        #print('recon_loss',recon_loss_)
+        print('Loss: {:.4}'. format(loss))
+        print('kl_loss_p_and_tmc:',kl_loss_p_and_tmc_)
+        print('recon_loss',recon_loss_)
         #print("z_sample",z_sample_)
         #print("tmc_latent",tmc_latent_)
         
         #print("z_mu",z_mu_)
         #print("z_logvar",z_logvar_)
+        #------------knn---------------
+        total_num = 100
+        rate = 0.8
+        train = total_num*rate
+        X_, Y = mnist.train.next_batch(total_num)
+        
+        z_sample_ = sess.run([z_sample], feed_dict={X: X_})
+        z_sample_ = np.array(z_sample_).reshape(total_num,z_dim)
+        print("z_sample",z_sample_.shape)
+        
+        X_train,X_test = z_sample_[:30,:],z_sample_[30:,:]
+        Y = [np.where(yy == 1)[0][0] for yy in Y]
+        Y_train,Y_test = Y[:30],Y[30:]
+        print("Y_test",Y_test)
+        neigh = KNeighborsClassifier(n_neighbors=3)
+        neigh.fit(X_train, Y_train) 
+        predict = neigh.predict(X_test)
+        print("predict",predict)
+        print("acc",acc(predict,Y_test))
+
+        #---------------------------------    
         print()
         
         #sampled_prior  = np.random.randn(16, z_dim)
         sampled_prior= tau_star.sample(N=16)   #(16,z_dim)
-        print(sampled_prior)
+        #print(sampled_prior)
         #break
         samples = sess.run(X_samples, feed_dict={z: sampled_prior})
 
